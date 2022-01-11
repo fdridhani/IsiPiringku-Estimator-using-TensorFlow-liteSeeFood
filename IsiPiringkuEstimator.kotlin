@@ -1,0 +1,272 @@
+class EksekutorModelSegmentasiCitra(
+  conteks: Context,
+  private var berGPU: Boolean = true
+) {
+
+  private val SegmentasiCitra: ImageSegmenter
+
+  private var WaktuEksekusiPenuh = 0L
+  private var WaktuSegmentasiCitra = 0L
+  private var WaktuPembuatanPeta = 0L
+  var Pokok = 0
+  var Buah = 0
+  var Sayur= 0
+  var Lauk = 0
+
+  init {
+    SegmentasiCitra= ImageSegmenter.createFromFile(conteks, IMAGE_SEGMENTATION_MODEL)
+  }
+
+  fun execute(CitraMasukan: Bitmap): ModelExecutionResult {
+    try {
+      WaktuEksekusiPenuh = SystemClock.uptimeMillis()
+
+      WaktuSegmentasiCitra = SystemClock.uptimeMillis()
+      val tensorImage = TensorImage.fromBitmap(CitraMasukan)
+      val hasil = SegmentasiCitra.segment(tensorImage)
+      WaktuSegmentasiCitra = SystemClock.uptimeMillis() - WaktuSegmentasiCitra
+      Log.d(TAG, "Time to run the ImageSegmenter $WaktuSegmentasiCitra")
+
+      WaktuPembuatanPeta = SystemClock.uptimeMillis()
+      val (petaCitra, makananTerdeteksi) = buatPetadanLabel(
+        hasil.get(0), CitraMasukan.getWidth(),
+        CitraMasukan.getHeight()
+      )
+      WaktuPembuatanPeta = SystemClock.uptimeMillis() - WaktuPembuatanPeta
+      Log.d(TAG, "Waktu yang diperlukan untuk membuat peta dan legenda label adalah $WaktuPembuatanPeta")
+
+      WaktuEksekusiPenuh = SystemClock.uptimeMillis() - WaktuEksekusiPenuh
+      Log.d(TAG, "Waktu untuk eksekusi keseluruhan $WaktuEksekusiPenuh")
+
+      return ModelExecutionResult(
+        /*hasil gabungan citra=*/ gabungkanCitra(petaCitra, CitraMasukan),
+        /*citra asli=*/ CitraMasukan,
+        /*peta citra=*/ petaCitra,
+        formatLogEksekusi(CitraMasukan.getWidth(), CitraMasukan.getHeight()),
+        makananTerdeteksi
+      )
+    } catch (e: Exception) {
+      val exceptionLog = "terjadi kesalahan: ${e.message}"
+      Log.d(TAG, exceptionLog)
+
+      val citraKosong =
+        Bitmap.createBitmap(CitraMasukan.getWidth(), CitraMasukan.getHeight(), Bitmap.Config.ARGB_8888)
+      return ModelExecutionResult(
+        citraKosong,
+        citraKosong,
+        citraKosong,
+        exceptionLog,
+        HashMap<String, Int>()
+      )
+    }
+  }
+
+  private fun buatPetadanLabel(
+    hasilSegmentasi: Segmentation,
+    lebarCitraMasukan: Int,
+    tinggiCitraMasukan: Int
+  ): Pair<Bitmap, Map<String, Int>> {
+    val labelWarnaPeta = hasilSegmentasi.getColoredLabels()
+    var totalWarna = IntArray(labelWarnaPeta.size)
+    var hitungan = 0
+    for (coloredLabel in labelWarnaPeta) {
+      val rgb = coloredLabel.getArgb()
+      totalWarna[hitungan++] = Color.argb(ALPHA_VALUE, Color.red(rgb), Color.green(rgb), Color.blue(rgb))
+    }
+    Log.d(TAG,"jumlah label total warna adalah $hitungan")
+    totalWarna[0] = Color.TRANSPARENT
+
+    val tensorPeta = hasilSegmentasi.getMasks().get(0)
+    val rangkaianPeta = tensorPeta.getBuffer().array()
+    val jumlahPiksel = IntArray(rangkaianPeta.size)
+    val makananTerdeteksi = HashMap<String, Int>()
+    val warnaMakananPokok = argb(128,0xba,0x97,0xc6).toInt()
+    val warnaSayur = argb(128,0xba,0xd8,0x77).toInt()
+    val warnaBuah = argb(128,0xf4,0x99,0xc2).toInt()
+    val warnaLauk = argb(128,0x5e,0xaa,0xdf).toInt()
+    val warnaLain = argb(0,0,0,0).toInt()
+    var indeksMakanan = 0 //Pokok = 1, Lauk = 2, Sayur = 3, Buah = 4
+
+    for (i in rangkaianPeta.indices) {
+      val cekLabel = labelWarnaPeta.get(rangkaianPeta[i].toInt()).getlabel()
+      var warna : Int = 0
+      var namaJenis : String = ""
+      if (cekLabel.contains("starch")) indeksMakanan = 1
+      else if (cekLabel.contains("grains")) indeksMakanan = 1
+      else if (cekLabel.contains("snack")) indeksMakanan = 1
+      else if (cekLabel.contains("sweets")) indeksMakanan = 1
+      else if (cekLabel.contains("other_food")) indeksMakanan = 1
+      else if (cekLabel.contains("dairy")) indeksMakanan = 2
+      else if (cekLabel.contains("herbs")) indeksMakanan = 2
+      else if (cekLabel.contains("oils")) indeksMakanan = 2
+      else if (cekLabel.contains("sauces")) indeksMakanan = 2
+      else if (cekLabel.contains("soups")) indeksMakanan = 2
+      else if (cekLabel.contains("protein")) indeksMakanan = 2
+      else if (cekLabel.contains("vegetables")) indeksMakanan = 3
+      else if (cekLabel.contains("fruits")) indeksMakanan = 4
+      else if (cekLabel.contains("beverages")) indeksMakanan = 0
+      else if (cekLabel.contains("dining")) indeksMakanan = 0
+      else if (cekLabel.contains("container")) indeksMakanan = 0
+      else indeksMakanan = 0
+
+      if (indeksMakanan == 1 ){
+        warna = warnaMakananPokok
+        namaJenis = "Pokok"
+        Pokok++
+      } else
+      if (indeksMakanan == 2){
+        warna = warnaLauk
+        namaJenis = "Lauk"
+        Lauk++
+      } else
+      if (indeksMakanan == 3){
+        warna = warnaSayur
+        namaJenis = "Sayur"
+        Sayur++
+      } else
+      if (indeksMakanan == 4){
+        warna = warnaBuah
+        namaJenis = "Buah"
+        Buah++
+      } else {
+        warna = warnaLain
+        namaJenis = "Lain-lain"
+      }
+
+      jumlahPiksel[i] = warna
+      makananTerdeteksi.put(namaJenis, warna)
+    }
+    val petaCitra = Bitmap.createBitmap(
+      jumlahPiksel, tensorPeta.getWidth(), tensorPeta.getHeight(),
+      Bitmap.Config.ARGB_8888
+    )
+   return Pair(Bitmap.createScaledBitmap(petaCitra, lebarCitraMasukan, tinggiCitraMasukan, true), makananTerdeteksi)
+  }
+  /*
+  private fun buatPetadanLabel(
+    hasilSegmentasi: Segmentation,
+    lebarCitraMasukan: Int,
+    tinggiCitraMasukan: Int
+  ): Pair<Bitmap, Map<String, Int>> {
+    val labelWarnaPeta = hasilSegmentasi.getColoredLabels()
+    var totalWarna = IntArray(labelWarnaPeta.size)
+    var hitungan = 0
+    for (coloredLabel in labelWarnaPeta) {
+      val rgb = coloredLabel.getArgb()
+      totalWarna[hitungan++] = Color.argb(ALPHA_VALUE, Color.red(rgb), Color.green(rgb), Color.blue(rgb))
+    }
+    Log.d(TAG,"jumlah label total warna adalah $hitungan")
+    totalWarna[0] = Color.TRANSPARENT
+    val tensorPeta = hasilSegmentasi.getMasks().get(0)
+    val rangkaianPeta = tensorPeta.getBuffer().array()
+    val jumlahPiksel = IntArray(rangkaianPeta.size)
+    val makananTerdeteksi = HashMap<String, Int>()
+    for (i in rangkaianPeta.indices) {
+      val wewarna = totalWarna[rangkaianPeta[i].toInt()]
+      jumlahPiksel[i] = wewarna
+      makananTerdeteksi.put(labelWarnaPeta.get(rangkaianPeta[i].toInt()).getlabel(), wewarna)
+    }
+    val petaCitra = Bitmap.createBitmap(
+      jumlahPiksel, tensorPeta.getWidth(), tensorPeta.getHeight(),
+      Bitmap.Config.ARGB_8888
+    )
+    return Pair(Bitmap.createScaledBitmap(petaCitra, lebarCitraMasukan, tinggiCitraMasukan, true), makananTerdeteksi)
+  }
+*/
+  private fun gabungkanCitra(foregrand: Bitmap, background: Bitmap): Bitmap {
+    val hasilGabunganCitra =
+      Bitmap.createBitmap(foregrand.getWidth(), foregrand.getHeight(), foregrand.getConfig())
+    val wadahCitra = Canvas(hasilGabunganCitra)
+    wadahCitra.drawBitmap(background, 0.0f, 0.0f, null)
+    wadahCitra.drawBitmap(foregrand, 0.0f, 0.0f, null)
+    return hasilGabunganCitra
+  }
+
+  private fun formatLogEksekusi(lebarCitra: Int, tinggiCitra: Int): String {
+    val sb = StringBuilder()
+    val total:Int = (Pokok+Sayur+Lauk+Buah)
+    val persenPokok = (Pokok*100)/total
+    val persenSayur = (Sayur*100)/total
+    val persenLauk = (Lauk*100)/total
+    val persenBuah = (Buah*100)/total
+    sb.append("Makanan Pokok: $persenPokok%\n")//"Input Image Size: $lebarCitra x $tinggiCitra\n")
+    if (persenPokok > 40) sb.append("Kurangi porsi Makanan Pokok!\n")//"Number of threads: $NUM_THREADS\n")
+    sb.append("Sayur-sayuran: $persenSayur%\n")//"GPU enabled: $useGPU\n")
+    if (persenSayur < 23) sb.append("Tambah lagi porsi Sayur-sayuran!\n")//"Number of threads: $NUM_THREADS\n")
+    sb.append("Lauk pauk    : $persenLauk%\n")//"ImageSegmenter execution time: $WaktuSegmentasiCitra ms\n")
+    if(persenLauk < 15) sb.append("Tambah lagi porsi Lauk-Pauk!\n")
+    if(persenLauk > 40) sb.append("Kurangi porsi Lauk-Pauk!\n")
+    sb.append("Buah-buahan  : $persenBuah%\n")//Mask creation time: $WaktuPembuatanPeta ms\n")
+    if(persenBuah < 15) sb.append("Tambah lagi porsi Buah-buahan!\n")
+    sb.append("Waktu analisa: $WaktuEksekusiPenuh ms\n")
+    return sb.toString()
+  }
+
+  fun close() {
+    imageSegmenter.close()
+  }
+
+  companion object {
+    public const val TAG = "SegmentationTask"
+    private const val NUM_THREADS = 4
+    private const val IMAGE_SEGMENTATION_MODEL = "seefoodv1.tflite"
+    private const val ALPHA_VALUE = 128
+  }
+
+  /*
+  private fun estimasiKomposisiIsiPiringku(
+    hasilSegmentasi: Segmentation
+  ): Map<String, Int> {
+    val labelWarnaPeta = hasilSegmentasi.getColoredLabels()
+    var totalWarna = IntArray(labelWarnaPeta.size)
+    var hitungan = 0
+    for (coloredLabel in labelWarnaPeta) {
+
+      val rgb = coloredLabel.getArgb()
+      totalWarna[hitungan++] = Color.argb(ALPHA_VALUE, Color.red(rgb), Color.green(rgb), Color.blue(rgb))
+    }
+
+    totalWarna[0] = Color.TRANSPARENT
+
+    // Pokok = starch/grains+snacks+sweets/desserts+other_food
+    // Lauk = dairy+herbs/spices+fats/oils/sauces+soups/stews+protein
+    // Sayur = vegetables
+    // Buah = fruits
+    val tensorPeta = hasilSegmentasi.getMasks().get(0)
+    val rangkaianPeta = tensorPeta.getBuffer().array()
+    val jumlahPiksel = IntArray(rangkaianPeta.size)
+    val makananTerdeteksi = HashMap<String, Int>()
+    val warnaMakananPokok = argb(128,0xba,0x97,0xc6).toInt()
+    val warnaSayur = argb(128,0xba,0xd8,0x77).toInt()
+    val warnaBuah = argb(128,0xf4,0x99,0xc2).toInt()
+    val warnaLauk = argb(128,0x5e,0xaa,0xdf).toInt()
+
+    for (i in rangkaianPeta.indices) {
+      val wewarna = totalWarna[rangkaianPeta[i].toInt()]
+      val namajenis = labelWarnaPeta.get(rangkaianPeta[i].toInt()).getlabel()
+      if (namajenis.contains("starch")) namajenis = "Pokok"
+      if (namajenis.contains("grains")) namajenis = "Pokok"
+      if (namajenis.contains("snack")) namajenis = "Pokok"
+      if (namajenis.contains("sweets")) namajenis = "Pokok"
+      if (namajenis.contains("other")) namajenis = "Pokok"
+      if (namajenis.contains("dairy")) namajenis = "Lauk"
+      if (namajenis.contains("herbs")) namajenis = "Lauk"
+      if (namajenis.contains("oils")) namajenis = "Lauk"
+      if (namajenis.contains("sauces")) namajenis = "Lauk"
+      if (namajenis.contains("soups")) namajenis = "Lauk"
+      if (namajenis.contains("protein")) namajenis = "Lauk"
+      if (namajenis.contains("vegetables")) namajenis = "Sayur"
+      if (namajenis.contains("fruits")) namajenis = "Buah"
+
+      if (namajenis == "Pokok") wewarna = warnaMakananPokok
+      if (namajenis == "Lauk") wewarna = warnaLauk
+      if (namajenis == "Sayur") wewarna = warnaSayur
+      if (namajenis == "Buah") wewarna = warnaBuah
+
+      jumlahPiksel[i] = wewarna
+      makananTerdeteksi.put(namajenis, wewarna)
+    }
+
+    return makananTerdeteksi
+  }*/
+}
